@@ -1,0 +1,30 @@
+{
+  "name": "pi-zephyr-extensions",
+  "version": "0.1.0",
+  "description": "Compound-engineering style workflows for embedded firmware (Zephyr RTOS kernel and architecture), packaged as sub-extensions",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/zephyr-subagents/index.ts",
+      "./extensions/zephyr-workflow/index.ts",
+      "./extensions/zephyr-limit-repeated-tool-calls/index.ts"
+    ],
+    "skills": [
+      "./extensions/zephyr-workflow/skills"
+    ],
+    "prompts": [
+      "./extensions/zephyr-workflow/prompts"
+    ]
+  }
+}
