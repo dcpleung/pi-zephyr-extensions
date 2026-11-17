@@ -16,6 +16,7 @@
   },
   "pi": {
     "extensions": [
+      "./extensions/*.ts",
       "./extensions/zephyr-subagents/index.ts",
       "./extensions/zephyr-workflow/index.ts",
       "./extensions/zephyr-limit-repeated-tool-calls/index.ts"
