@@ -9,29 +9,51 @@
  * telling the model that nothing changed and to try something else. The tool still
  * runs and its output is kept, so legitimate re-checks are not broken.
  *
- * Env:
- *   ZEPHYR_REPEAT_THRESHOLD   identical calls before nudging (default 2, min 2)
- *   ZEPHYR_REPEAT_WINDOW      how many recent calls to look at, including the
- *                             current one (default 10, 0 = since the last user prompt)
- *   ZEPHYR_REPEAT_IGNORE      comma-separated tool names never tracked
- *   ZEPHYR_REPEAT_DISABLE=1   turn the extension off
+ * Settings (settings.json, key "zephyrLimitRepeatedToolCalls"; re-read on every
+ * tool call, so /reload picks up changes). Defaults apply when unset:
+ *   threshold  identical calls before nudging (default 2, min 2)
+ *   window     how many recent calls to look at, including the current one
+ *              (default 10, 0 = since the last user prompt)
+ *   ignore     array of tool names never tracked
+ *   enabled    false turns the extension off
  */
 import { createHash } from "node:crypto";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const THRESHOLD = Math.max(2, Number.parseInt(process.env.ZEPHYR_REPEAT_THRESHOLD ?? "", 10) || 2);
-const WINDOW = (() => {
-	const n = Number.parseInt(process.env.ZEPHYR_REPEAT_WINDOW ?? "", 10);
-	if (Number.isNaN(n) || n < 0) return 10;
-	return n === 0 ? Infinity : Math.max(n, THRESHOLD);
-})();
-const SCOPE = Number.isFinite(WINDOW) ? `in the last ${WINDOW} tool calls` : "since the last user message";
-const IGNORE = new Set(
-	(process.env.ZEPHYR_REPEAT_IGNORE ?? "")
-		.split(",")
-		.map((s) => s.trim())
-		.filter(Boolean),
-);
+/* Settings live under this key in settings.json (global or project). */
+const SETTINGS_KEY = "zephyrLimitRepeatedToolCalls";
+
+interface Config {
+	threshold: number;
+	window: number;
+	ignore: Set<string>;
+	disabled: boolean;
+	scope: string;
+}
+
+function toInt(v: unknown): number | undefined {
+	const n = typeof v === "string" ? Number.parseInt(v, 10) : v;
+	return typeof n === "number" && Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
+function loadConfig(pi: ExtensionAPI): Config {
+	const raw = (pi.getSettings() as Record<string, unknown>)[SETTINGS_KEY];
+	const s = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+
+	const threshold = Math.max(2, toInt(s.threshold) ?? 2);
+
+	const w = toInt(s.window);
+	const window = w === undefined || w < 0 ? 10 : w === 0 ? Infinity : Math.max(w, threshold);
+
+	const ign = s.ignore ?? [];
+	const names = Array.isArray(ign) ? ign.map(String) : String(ign).split(",");
+	const ignore = new Set(names.map((n) => n.trim()).filter(Boolean));
+
+	const disabled = s.enabled === false;
+
+	const scope = Number.isFinite(window) ? `in the last ${window} tool calls` : "since the last user message";
+	return { threshold, window, ignore, disabled, scope };
+}
 
 /* JSON with sorted object keys, so {a,b} and {b,a} hash the same. */
 function stable(v: unknown): string {
@@ -49,11 +71,11 @@ function stable(v: unknown): string {
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 
-function nudge(tool: string, count: number): string {
+function nudge(cfg: Config, tool: string, count: number): string {
 	const base =
 		`[repeated-tool-call] This is call #${count} of \`${tool}\` with identical input and identical output ` +
-		`${SCOPE}. Repeating it will not produce new information.`;
-	if (count === THRESHOLD) {
+		`${cfg.scope}. Repeating it will not produce new information.`;
+	if (count === cfg.threshold) {
 		return `${base} Use the result you already have, or change the input (different path, range, pattern or command) if you need something else.`;
 	}
 	return (
@@ -63,8 +85,6 @@ function nudge(tool: string, count: number): string {
 }
 
 export default function (pi: ExtensionAPI) {
-	if (process.env.ZEPHYR_REPEAT_DISABLE === "1") return;
-
 	/* Keys (tool + input + result) of the most recent tracked calls, oldest first. */
 	let recent: string[] = [];
 	const reset = () => {
@@ -76,7 +96,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", async () => reset());
 
 	pi.on("tool_result", async (event) => {
-		if (IGNORE.has(event.toolName)) return;
+		/* Re-read each call so edits followed by /reload apply without a restart. */
+		const cfg = loadConfig(pi);
+		if (cfg.disabled || cfg.ignore.has(event.toolName)) return;
 		/* Nested calls (e.g. from a codemode script) are the parent tool's business. */
 		if (event.parentToolCallId) return;
 
@@ -84,12 +106,12 @@ export default function (pi: ExtensionAPI) {
 			stable({ tool: event.toolName, input: event.input, content: event.content, isError: event.isError }),
 		);
 		recent.push(key);
-		if (recent.length > WINDOW) recent.shift();
+		if (recent.length > cfg.window) recent.shift();
 		const count = recent.filter((k) => k === key).length;
-		if (count < THRESHOLD) return;
+		if (count < cfg.threshold) return;
 
 		return {
-			content: [...event.content, { type: "text" as const, text: `\n\n${nudge(event.toolName, count)}` }],
+			content: [...event.content, { type: "text" as const, text: `\n\n${nudge(cfg, event.toolName, count)}` }],
 			/* Keep structured output; only a note was appended. */
 			...(event.structuredContent !== undefined ? { structuredContent: event.structuredContent } : {}),
 		};
