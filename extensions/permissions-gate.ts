@@ -16,7 +16,7 @@ import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-wo
  * Up/Down pick Yes/No, Enter confirms; Shift+Up/Down, PageUp/PageDown, Home/End
  * scroll the command; y allows; n/Esc denies.
  */
-function confirmCommand(ctx: ExtensionContext, command: string): Promise<boolean> {
+function confirmCommand(ctx: ExtensionContext, command: string, reason: string): Promise<boolean> {
 	return ctx.ui.custom<boolean>((tui, theme, _kb, done) => {
 		let scroll = 0;
 		let selected = 0; // 0 = Yes, 1 = No
@@ -41,7 +41,7 @@ function confirmCommand(ctx: ExtensionContext, command: string): Promise<boolean
 				scroll = Math.min(Math.max(0, scroll), max);
 
 				const out: string[] = [];
-				out.push(truncateToWidth(theme.fg("warning", "⚠️ Dangerous command:"), width));
+				out.push(truncateToWidth(theme.fg("warning", `⚠️ Dangerous command (${reason}):`), width));
 				out.push("");
 				for (const l of wrapped.slice(scroll, scroll + page)) out.push(truncateToWidth(`  ${l}`, width));
 				out.push("");
@@ -121,27 +121,28 @@ export default function (pi: ExtensionAPI) {
 		{ pattern: /\b(ssh|sshfs|mosh|autossh)\b/i, label: "ssh (includes ssh-keygen, ssh-add, ssh-agent, ...)" },
 	];
 
-	const dangerousPatterns = [
+	// Allowed only after user confirmation; the label is shown in the prompt
+	const dangerousPatterns: { pattern: RegExp; label: string }[] = [
 		// Destructive file operations
-		/\brm\s+(-\w*[rRf]\w*|--recursive|--force)/i,
-		/\bshred\b/i,
-		/\btruncate\b/i,
-		/\bfind\b.*(-delete|-exec\s+rm)/i,
-		/\bgit\s+clean\b.*-\w*[fdx]/i,
-		/\bgit\s+reset\s+--hard/i,
-		/\bgit\s+push\b.*(--force|-f\b)/i,
+		{ pattern: /\brm\s+(-\w*[rRf]\w*|--recursive|--force)/i, label: "recursive/forced file removal" },
+		{ pattern: /\bshred\b/i, label: "irrecoverable file destruction (shred)" },
+		{ pattern: /\btruncate\b/i, label: "file truncation" },
+		{ pattern: /\bfind\b.*(-delete|-exec\s+rm)/i, label: "find with file deletion" },
+		{ pattern: /\bgit\s+clean\b.*-\w*[fdx]/i, label: "git clean (deletes untracked files)" },
+		{ pattern: /\bgit\s+reset\s+--hard/i, label: "git reset --hard (discards changes)" },
+		{ pattern: /\bgit\s+push\b.*(--force|-f\b)/i, label: "git force push" },
 		// Network downloads (uploads/pipe-to-shell are always denied above)
-		/\b(curl|wget)\b/i,
+		{ pattern: /\b(curl|wget)\b/i, label: "network download" },
 		// Permissions / ownership
-		/\b(chmod|chown|chgrp)\b.*(777|-R|--recursive)/i,
-		/\bchmod\b.*[ugoa]*\+s\b/i,
+		{ pattern: /\b(chmod|chown|chgrp)\b.*(777|-R|--recursive)/i, label: "broad permission/ownership change" },
+		{ pattern: /\bchmod\b.*[ugoa]*\+s\b/i, label: "setuid/setgid bit" },
 		// System control
-		/\b(shutdown|reboot|halt|poweroff|init\s+[06])\b/i,
-		/\b(kill|killall|pkill)\b\s+(-9|-KILL|-s\s*KILL)/i,
-		/\b(iptables|nft|ufw)\b/i,
-		/\b(crontab\s+-r|userdel|usermod|passwd)\b/i,
+		{ pattern: /\b(shutdown|reboot|halt|poweroff|init\s+[06])\b/i, label: "system shutdown/reboot" },
+		{ pattern: /\b(kill|killall|pkill)\b\s+(-9|-KILL|-s\s*KILL)/i, label: "forced process kill" },
+		{ pattern: /\b(iptables|nft|ufw)\b/i, label: "firewall change" },
+		{ pattern: /\b(crontab\s+-r|userdel|usermod|passwd)\b/i, label: "user/cron account change" },
 		// Fork bomb
-		/:\(\)\s*\{.*\|.*&.*\}\s*;\s*:/,
+		{ pattern: /:\(\)\s*\{.*\|.*&.*\}\s*;\s*:/, label: "fork bomb" },
 	];
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -155,16 +156,16 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason: `Command always denied by policy: ${denied.label}` };
 		}
 
-		const isDangerous = dangerousPatterns.some((p) => p.test(command));
+		const dangerous = dangerousPatterns.find((d) => d.pattern.test(command));
 
-		if (isDangerous) {
+		if (dangerous) {
 			if (!ctx.hasUI) {
 				// In non-interactive mode, block by default
-				return { block: true, reason: "Dangerous command blocked (no UI for confirmation)" };
+				return { block: true, reason: `Dangerous command blocked (${dangerous.label}; no UI for confirmation)` };
 			}
 
-			if (!(await confirmCommand(ctx, command))) {
-				return { block: true, reason: "Blocked by user" };
+			if (!(await confirmCommand(ctx, command, dangerous.label))) {
+				return { block: true, reason: `Blocked by user (${dangerous.label})` };
 			}
 		}
 
