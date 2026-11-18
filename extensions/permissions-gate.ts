@@ -8,7 +8,72 @@
  * system control, curl/wget.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+
+/**
+ * Confirmation prompt whose command body scrolls when it does not fit the terminal.
+ * Up/Down pick Yes/No, Enter confirms; Shift+Up/Down, PageUp/PageDown, Home/End
+ * scroll the command; y allows; n/Esc denies.
+ */
+function confirmCommand(ctx: ExtensionContext, command: string): Promise<boolean> {
+	return ctx.ui.custom<boolean>((tui, theme, _kb, done) => {
+		let scroll = 0;
+		let selected = 0; // 0 = Yes, 1 = No
+		let lastMax = 0;
+		let lastPage = 1;
+		let cachedWidth = -1;
+		let wrapped: string[] = [];
+
+		return {
+			render(width: number): string[] {
+				if (width !== cachedWidth) {
+					wrapped = command
+						.split("\n")
+						.flatMap((l) => wrapTextWithAnsi(l.replace(/\t/g, "  ") || " ", Math.max(1, width - 2)));
+					cachedWidth = width;
+				}
+				const chrome = 6; // title, blank, blank, Yes, No, hint
+				const page = Math.max(3, Math.min(wrapped.length, tui.terminal.rows - chrome - 2));
+				const max = Math.max(0, wrapped.length - page);
+				lastMax = max;
+				lastPage = page;
+				scroll = Math.min(Math.max(0, scroll), max);
+
+				const out: string[] = [];
+				out.push(truncateToWidth(theme.fg("warning", "⚠️ Dangerous command:"), width));
+				out.push("");
+				for (const l of wrapped.slice(scroll, scroll + page)) out.push(truncateToWidth(`  ${l}`, width));
+				out.push("");
+				["Yes", "No"].forEach((label, i) => {
+					const line = i === selected ? theme.fg("accent", `→ ${label}`) : `  ${label}`;
+					out.push(truncateToWidth(line, width));
+				});
+				const pos =
+					max > 0 ? `lines ${scroll + 1}-${scroll + page} of ${wrapped.length}; Shift+↑↓/PgUp/PgDn scroll` : "";
+				out.push(truncateToWidth(theme.fg("dim", `↑↓ select, Enter confirm, Esc cancel${pos ? `; ${pos}` : ""}`), width));
+				return out;
+			},
+			handleInput(data: string): void {
+				if (matchesKey(data, Key.shift("up"))) scroll -= 1;
+				else if (matchesKey(data, Key.shift("down"))) scroll += 1;
+				else if (matchesKey(data, Key.pageUp)) scroll -= lastPage;
+				else if (matchesKey(data, Key.pageDown)) scroll += lastPage;
+				else if (matchesKey(data, Key.home)) scroll = 0;
+				else if (matchesKey(data, Key.end)) scroll = lastMax;
+				else if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) selected = 1 - selected;
+				else if (matchesKey(data, Key.enter)) return done(selected === 0);
+				else if (data === "y" || data === "Y") return done(true);
+				else if (data === "n" || data === "N" || matchesKey(data, Key.escape)) return done(false);
+				else return;
+				tui.requestRender();
+			},
+			invalidate() {
+				cachedWidth = -1;
+			},
+		};
+	});
+}
 
 export default function (pi: ExtensionAPI) {
 	// Always denied: blocked outright, no confirmation prompt
@@ -98,9 +163,7 @@ export default function (pi: ExtensionAPI) {
 				return { block: true, reason: "Dangerous command blocked (no UI for confirmation)" };
 			}
 
-			const choice = await ctx.ui.select(`⚠️ Dangerous command:\n\n  ${command}\n\nAllow?`, ["Yes", "No"]);
-
-			if (choice !== "Yes") {
+			if (!(await confirmCommand(ctx, command))) {
 				return { block: true, reason: "Blocked by user" };
 			}
 		}
