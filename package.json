@@ -26,6 +26,9 @@
     ],
     "prompts": [
       "./extensions/zephyr-workflow/prompts"
+    ],
+    "themes": [
+      "./themes"
     ]
   }
 }
