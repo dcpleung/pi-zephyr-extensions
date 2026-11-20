@@ -15,7 +15,7 @@ import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type BranchFilter, branchFeature, defaultIgnoreBranch, git, repoSlug, slugify } from "./git.ts";
 
-export const DEFAULT_KINDS = ["brainstorm", "plan", "review", "state", "solution"] as const;
+export const DEFAULT_KINDS = ["issue", "brainstorm", "plan", "review", "state", "solution"] as const;
 
 export interface WorkflowConfig {
 	/* Short display name, e.g. "Zephyr". */
@@ -41,7 +41,15 @@ export interface WorkflowConfig {
 	ignoreBranch?: BranchFilter;
 }
 
-export function registerWorkflow(pi: ExtensionAPI, cfg: WorkflowConfig) {
+/* What a sub-extension can do with the workflow's artifact store. */
+export interface WorkflowHandle {
+	/* Make <slug> the active feature (persisted in the session), creating its state.json; returns its directory. */
+	useFeature(slug: string, cwd: string): { feature: string; dir: string };
+	/* Resolve an artifact path for the active feature (see the artifact path tool). */
+	pathFor(kind: string, name?: string): string;
+}
+
+export function registerWorkflow(pi: ExtensionAPI, cfg: WorkflowConfig): WorkflowHandle {
 	const env = (k: string) => `${cfg.envPrefix}_${k}`;
 	const ROOT = process.env[env("HOME")] ?? join(homedir(), ".pi", "agent", cfg.id);
 	const STATE_ENTRY = `${cfg.id}-feature`;
@@ -110,6 +118,22 @@ export function registerWorkflow(pi: ExtensionAPI, cfg: WorkflowConfig) {
 		return join(dir, kind === "state" ? "state.json" : `${kind}.md`);
 	}
 
+	function useFeature(slug: string, cwd: string) {
+		setFeature(slug, true);
+		const sp = join(featureDir()!, "state.json");
+		if (!existsSync(sp)) {
+			writeFileSync(
+				sp,
+				JSON.stringify(
+					{ feature, status: "brainstorm", branches: [git(cwd, "branch", "--show-current")].filter(Boolean), worktree: cwd },
+					null,
+					2,
+				),
+			);
+		}
+		return { feature: feature!, dir: featureDir()! };
+	}
+
 	pi.on("session_start", async (_e, ctx) => {
 		repo = repoSlug(ctx.cwd, process.env[env("PROJECT")]);
 		mkdirSync(join(repoDir(), "solutions"), { recursive: true });
@@ -162,22 +186,13 @@ export function registerWorkflow(pi: ExtensionAPI, cfg: WorkflowConfig) {
 				setFeature(undefined, true);
 				ctx.ui.notify("Active feature cleared", "info");
 			} else if (a) {
-				setFeature(a, true);
-				const sp = join(featureDir()!, "state.json");
-				if (!existsSync(sp)) {
-					writeFileSync(
-						sp,
-						JSON.stringify(
-							{ feature, status: "brainstorm", branches: [git(ctx.cwd, "branch", "--show-current")].filter(Boolean), worktree: ctx.cwd },
-							null,
-							2,
-						),
-					);
-				}
+				useFeature(a, ctx.cwd);
 				ctx.ui.notify(`Active feature: ${feature}\n${featureDir()}`, "info");
 			} else {
 				ctx.ui.notify(feature ? `${feature}\n${featureDir()}` : `No active feature (repo: ${repo})`, "info");
 			}
 		},
 	});
+
+	return { useFeature, pathFor };
 }

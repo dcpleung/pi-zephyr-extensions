@@ -2,7 +2,7 @@
 
 Plan / work / review / compound workflow for Zephyr RTOS kernel and architecture work.
 
-Commands: `/zbrainstorm`, `/zplan`, `/zwork`, `/zreview`, `/zcompound`, `/zfeature`, `/zcheck-compliance`, `/zfootprint`, `/ztwister`.
+Commands: `/zbrainstorm`, `/zplan`, `/zwork`, `/zreview`, `/zcompound`, `/zissue-review`, `/zfeature`, `/zcheck-compliance`, `/zfootprint`, `/ztwister`.
 
 ```
 index.ts                  registerWorkflow({ id: "zephyr-agent", ... }) from shared/workflow.ts
@@ -30,6 +30,16 @@ Env vars: `ZEPHYR_AGENT_PROJECT`, `ZEPHYR_AGENT_ARTIFACTS`, `ZEPHYR_AGENT_FEATUR
 `/zreview` groups the changed files by MAINTAINERS.yml area with
 `skills/zephyr-review/scripts/changed_areas.py` and dispatches `zephyr-area-reviewer` once per
 area through the `subagent` tool (from `zephyr-subagents`).
+
+## Issue intake
+
+`/zissue-review <number|url>` runs `gh issue view <issue URL>` itself (no `-R`, so no default repo
+is needed; the repository is `zephyrproject-rtos/zephyr` unless a URL or `owner/repo#N` says
+otherwise, or `zissueReview.repo` is set). It saves the issue and its comments as the `issue`
+artifact of a new active feature `issue-<number>-<title>` and tells you what to run next:
+`/zplan` for a bug, `/zbrainstorm` for a feature or enhancement. The type comes from the labels,
+then the issue template headings, then the title, and you are asked when it is unclear. The agent
+never runs `gh`; a `gh` error is shown to you as is.
 
 ## Compliance check
 
