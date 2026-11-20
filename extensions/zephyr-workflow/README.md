@@ -2,7 +2,7 @@
 
 Plan / work / review / compound workflow for Zephyr RTOS kernel and architecture work.
 
-Commands: `/zbrainstorm`, `/zplan`, `/zwork`, `/zreview`, `/zcompound`, `/zfeature`, `/zcheck-compliance`, `/zfootprint`.
+Commands: `/zbrainstorm`, `/zplan`, `/zwork`, `/zreview`, `/zcompound`, `/zfeature`, `/zcheck-compliance`, `/zfootprint`, `/ztwister`.
 
 ```
 index.ts                  registerWorkflow({ id: "zephyr-agent", ... }) from shared/workflow.ts
@@ -49,3 +49,12 @@ workspace) and in your tree as it is now, then compares `ram_report` and `rom_re
 defaults to `tests/benchmarks/footprints`. Builds use a temporary directory, and the worktree is removed
 afterwards. Settings under `zfootprint` in `settings.json`: `board`, `app`, `args`, and `python`
 (needs west plus the footprint tools); `tree`, `python` and `base` fall back to the `zcheckCompliance` ones.
+
+## Twister digest
+
+`/ztwister [test paths...] [-- extra twister args]` runs twister (default scope `tests/kernel` on
+`native_sim`) and shows only what needs attention: failures grouped by scenario and reason across
+platforms, each with its reason, log path and a rerun command, plus counts and the top skip
+reasons. Giving your own platform selection after `--` replaces the default platform. Manual only.
+Output goes to a temporary directory that the next run replaces. Settings under `ztwister`:
+`scope`, `platforms`, `args`; `tree`, `python`, `base` fall back to the `zcheckCompliance` ones.

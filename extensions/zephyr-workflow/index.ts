@@ -1,5 +1,5 @@
 /*
- * Zephyr RTOS workflow: /zbrainstorm, /zplan, /zwork, /zreview, /zcompound, /zfeature, /zcheck-compliance, /zfootprint.
+ * Zephyr RTOS workflow: /zbrainstorm, /zplan, /zwork, /zreview, /zcompound, /zfeature, /zcheck-compliance, /zfootprint, /ztwister.
  * Skills, prompts and subagent definitions live next to this file; the subagent
  * tool itself is provided by the sibling "zephyr-subagents" sub-extension.
  */
@@ -9,6 +9,7 @@ import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerWorkflow } from "./workflow.ts";
 import { registerZcheckCompliance } from "./zcheck-compliance.ts";
 import { registerZfootprint } from "./zfootprint.ts";
+import { registerZtwister } from "./ztwister.ts";
 
 export default function (pi: ExtensionAPI) {
 	registerWorkflow(pi, {
@@ -24,4 +25,5 @@ export default function (pi: ExtensionAPI) {
 	});
 	registerZcheckCompliance(pi);
 	registerZfootprint(pi);
+	registerZtwister(pi);
 }
