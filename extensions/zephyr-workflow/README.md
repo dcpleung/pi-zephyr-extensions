@@ -2,7 +2,7 @@
 
 Plan / work / review / compound workflow for Zephyr RTOS kernel and architecture work.
 
-Commands: `/zbrainstorm`, `/zplan`, `/zwork`, `/zreview`, `/zcompound`, `/zfeature`.
+Commands: `/zbrainstorm`, `/zplan`, `/zwork`, `/zreview`, `/zcompound`, `/zfeature`, `/zcheck-compliance`, `/zfootprint`.
 
 ```
 index.ts                  registerWorkflow({ id: "zephyr-agent", ... }) from shared/workflow.ts
@@ -30,3 +30,22 @@ Env vars: `ZEPHYR_AGENT_PROJECT`, `ZEPHYR_AGENT_ARTIFACTS`, `ZEPHYR_AGENT_FEATUR
 `/zreview` groups the changed files by MAINTAINERS.yml area with
 `skills/zephyr-review/scripts/changed_areas.py` and dispatches `zephyr-area-reviewer` once per
 area through the `subagent` tool (from `zephyr-subagents`).
+
+## Compliance check
+
+`/zcheck-compliance [base-ref] [-- extra args]` runs `scripts/ci/check_compliance.py` (gitlint, checkpatch,
+whitespace, Kconfig, devicetree, ...) on the local commits since HEAD forked from the base (`git merge-base <base> HEAD..HEAD`) and shows only the failing checks. The tree
+is the current directory if it is a Zephyr tree, else `~/zephyr/rtos/zephyr`. The base is the upstream ref and defaults to
+the first of `zephyr/main`, `upstream/main`, `origin/main`. Optional `zcheckCompliance` settings (the old `zcheck` key is still read) in
+`settings.json`: `tree`, `python` (a Python with `scripts/requirements-compliance.txt`
+installed), `base`, `args`. Only committed changes are checked.
+
+## Footprint diff
+
+`/zfootprint [board] [app] [--base <ref>] [-- extra west build args]` builds the app for the board
+twice, at the point where HEAD forked from the base (in a temporary git worktree inside the west
+workspace) and in your tree as it is now, then compares `ram_report` and `rom_report` with
+`scripts/footprint/fpdiff.py`. It is manual only: no tool, skill or prompt calls it. The app
+defaults to `tests/benchmarks/footprints`. Builds use a temporary directory, and the worktree is removed
+afterwards. Settings under `zfootprint` in `settings.json`: `board`, `app`, `args`, and `python`
+(needs west plus the footprint tools); `tree`, `python` and `base` fall back to the `zcheckCompliance` ones.
