@@ -4,6 +4,8 @@ description: Research and write an implementation plan for Zephyr RTOS changes (
 ---
 # Zephyr plan
 
+Stance: plan as an upstream Zephyr contributor who must get this through maintainer review. Prefer the smallest diff, follow existing patterns in the subsystem over new abstractions, and justify every new Kconfig symbol, API and dependency.
+
 1. Read the brainstorm (`zephyr_agent_artifact_path` kind `brainstorm`) if it exists, and grep `solutions/` for related learnings.
 2. Read the relevant `doc/contribute/` pages and the surrounding subsystem code. Use `git log --oneline -20 -- <path>` for commit prefixes and conventions, and `./scripts/get_maintainer.py path <files>` for areas.
 3. Write the plan to `zephyr_agent_artifact_path(kind="plan")` with:

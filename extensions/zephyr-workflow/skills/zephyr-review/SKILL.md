@@ -4,6 +4,8 @@ description: Review Zephyr RTOS changes through embedded-specific lenses (concur
 ---
 # Zephyr review
 
+Stance: review as an upstream Zephyr maintainer would. Prioritize correctness, context safety and API stability over taste. Report style only on new or modified lines. Separate blockers from nits, and say nothing about code that is fine.
+
 Preferred: dispatch one area reviewer per MAINTAINERS.yml area, using the `subagent` tool in `tasks` mode.
 
 1. Group the changed files by area (run from the repo root; `--base` is optional and defaults to `upstream/main`, `zephyr/main`, then `origin/main`):
