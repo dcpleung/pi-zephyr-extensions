@@ -2,7 +2,7 @@
 
 Plan / work / review / compound workflow for Zephyr RTOS kernel and architecture work.
 
-Commands: `/zbrainstorm`, `/zplan`, `/zwork`, `/zreview`, `/zcompound`, `/zissue-review`, `/zfeature`, `/zcheck-compliance`, `/zfootprint`, `/ztwister`.
+Commands: `/zbrainstorm`, `/zplan`, `/zwork`, `/zreview`, `/zpr-review`, `/zcompound`, `/zissue-review`, `/zfeature`, `/zcheck-compliance`, `/zfootprint`, `/ztwister`.
 
 ```
 index.ts                  registerWorkflow({ id: "zephyr-agent", ... }) from shared/workflow.ts
@@ -40,6 +40,15 @@ artifact of a new active feature `issue-<number>-<title>` and tells you what to 
 `/zplan` for a bug, `/zbrainstorm` for a feature or enhancement. The type comes from the labels,
 then the issue template headings, then the title, and you are asked when it is unclear. The agent
 never runs `gh`; a `gh` error is shown to you as is.
+
+## PR review
+
+`/zpr-review <pr-number|url> [prompt]` reviews an upstream pull request with the
+`zephyr-pr-review` skill. It assumes you are in the Zephyr tree, so a bare PR number works and `gh`
+resolves the repository from the current directory (a full URL is also accepted). The agent reads the change from `FETCH_HEAD` without touching your working tree, and
+reviews it through the `zephyr-review` lenses plus PR hygiene. The optional prompt is the focus and
+is answered explicitly. The review is shown in chat with a verdict and suggested comments; nothing
+is ever posted to GitHub.
 
 ## Compliance check
 

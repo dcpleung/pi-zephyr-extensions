@@ -1,5 +1,5 @@
 /*
- * Zephyr RTOS workflow: /zbrainstorm, /zplan, /zwork, /zreview, /zcompound, /zissue-review, /zfeature, /zcheck-compliance, /zfootprint, /ztwister.
+ * Zephyr RTOS workflow: /zbrainstorm, /zplan, /zwork, /zreview, /zpr-review, /zcompound, /zissue-review, /zfeature, /zcheck-compliance, /zfootprint, /ztwister.
  * Skills, prompts and subagent definitions live next to this file; the subagent
  * tool itself is provided by the sibling "zephyr-subagents" sub-extension.
  */
