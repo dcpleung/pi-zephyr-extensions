@@ -2,7 +2,7 @@
 
 Plan / work / review / compound workflow for Zephyr RTOS kernel and architecture work.
 
-Commands: `/zbrainstorm`, `/zplan`, `/zwork`, `/zreview`, `/zpr-review`, `/zcompound`, `/zissue-review`, `/zfeature`, `/zcheck-compliance`, `/zfootprint`, `/ztwister`.
+Commands: `/zbrainstorm`, `/zplan`, `/zwork`, `/zreview`, `/zpr-review`, `/zpr-babysit`, `/zcompound`, `/zissue-review`, `/zfeature`, `/zcheck-compliance`, `/zfootprint`, `/ztwister`.
 
 ```
 index.ts                  registerWorkflow({ id: "zephyr-agent", ... }) from shared/workflow.ts
@@ -49,6 +49,18 @@ resolves the repository from the current directory (a full URL is also accepted)
 reviews it through the `zephyr-review` lenses plus PR hygiene. The optional prompt is the focus and
 is answered explicitly. The review is shown in chat with a verdict and suggested comments; nothing
 is ever posted to GitHub.
+
+## PR babysit
+
+`/zpr-babysit [pr-number] [notes]` handles review feedback on a PR you submitted, with the
+`zephyr-pr-babysit` skill. It is the last step of brainstorm, plan, work, review: it refuses to run
+unless the feature has a brainstorm (or a bug issue artifact), a plan with every checklist item
+ticked, and a review with status `in-review`, and it lists what is missing. The first call for a feature must include the upstream PR number; it is
+stored under `pr` in the feature's `state.json`, and later calls need no number. The agent fetches
+new comments, review threads and CI results with `gh`, evaluates each comment against the code (fix,
+answer, push back, or ask you), makes fixes as `git commit --fixup` commits, and drafts a reply per
+comment. Handled comments are recorded in `state.json`, so each run only looks at new ones. It
+never pushes, rebases or posts anything: you autosquash, push and reply.
 
 ## Compliance check
 
