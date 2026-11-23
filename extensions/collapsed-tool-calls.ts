@@ -54,10 +54,31 @@ interface RowState {
 	endedAt?: number;
 	/* Row was created already finished (session history): only Pi's durationMs is known. */
 	restored?: boolean;
+	/* Redraw request for the row, kept so a finished agent run can stop it. */
+	invalidate?: () => void;
+	/* The run ended while the row was still "partial": treat it as finished. */
+	stopped?: boolean;
 	running?: boolean;
 	/* Bytes of output received so far (updated by every partial or final result). */
 	outBytes?: number;
 	timer?: ReturnType<typeof setInterval>;
+}
+
+/*
+ * Rows whose call is still running. Pi drops pending rows without a final result when a run ends
+ * (an aborted or denied call, an error), so a row can stay "partial" forever; the agent_end
+ * handler below stops those clocks.
+ */
+const live = new Set<RowState>();
+
+function stopRow(st: RowState) {
+	if (st.timer) clearInterval(st.timer);
+	st.timer = undefined;
+	st.running = false;
+	st.stopped = true;
+	st.endedAt ??= Date.now();
+	live.delete(st);
+	st.invalidate?.();
 }
 
 function formatElapsed(ms: number): string {
@@ -89,7 +110,7 @@ function oneLiner(
 	args: unknown,
 	theme: Styler,
 	isError: boolean,
-	isPartial: boolean,
+	isPartialNow: () => boolean,
 	elapsed: () => string | undefined,
 	transfer: () => string,
 	/* Tools with renderShell "self" (edit) get no panel from Pi: draw the background ourselves. */
@@ -97,10 +118,6 @@ function oneLiner(
 ): Component {
 	const title = theme.fg(isError ? "error" : "toolTitle", theme.bold(toolName));
 	const summary = summarize(args);
-	/* Same panel color Pi's tool row uses for its background. */
-	const panel = isPartial ? "toolPendingBg" : isError ? "toolErrorBg" : "toolSuccessBg";
-	/* The opening escape of that background (theme.bg() appends a closing "\x1b[49m"). */
-	const bgOpen = theme.bg(panel, "").replace(/\x1b\[49m$/, "");
 	return {
 		/*
 		 * truncateToWidth() ends the kept text and the "..." with a full SGR reset, which also drops the
@@ -108,6 +125,11 @@ function oneLiner(
 		 * The elapsed time sits right after the tool name so truncation never cuts it off.
 		 */
 		render: (width: number) => {
+			const isPartial = isPartialNow();
+			/* Same panel color Pi's tool row uses for its background. */
+			const panel = isPartial ? "toolPendingBg" : isError ? "toolErrorBg" : "toolSuccessBg";
+			/* The opening escape of that background (theme.bg() appends a closing "\x1b[49m"). */
+			const bgOpen = theme.bg(panel, "").replace(/\x1b\[49m$/, "");
 			const t = elapsed();
 			const time = t ? ` ${theme.fg(isPartial ? "accent" : "dim", t)}` : "";
 			const io = transfer();
@@ -127,6 +149,14 @@ function oneLiner(
 }
 
 export default function (pi: ExtensionAPI) {
+	/* A finished run leaves no running calls: stop any clock still ticking for a call that never got a result. */
+	pi.on("agent_end", async () => {
+		for (const st of [...live]) stopRow(st);
+	});
+	pi.on("session_shutdown", async () => {
+		for (const st of [...live]) stopRow(st);
+	});
+
 	pi.registerToolRenderer((toolName, next) => {
 		const base = next();
 		return {
@@ -141,8 +171,11 @@ export default function (pi: ExtensionAPI) {
 				const st = context.state as RowState;
 				if (st.startedAt === undefined && !context.isPartial) st.restored = true;
 				st.startedAt ??= Date.now();
-				st.running = context.isPartial;
+				st.running = context.isPartial && !st.stopped;
+				st.invalidate = context.invalidate;
 				if (!st.running) st.endedAt ??= Date.now();
+				if (st.running) live.add(st);
+				else live.delete(st);
 				if (st.running && !st.timer) {
 					st.timer = setInterval(() => {
 						if (!st.running) {
@@ -181,8 +214,9 @@ export default function (pi: ExtensionAPI) {
 					toolName,
 					args,
 					theme,
-					context.isError,
-					context.isPartial,
+					/* A row that never got a result (run ended first) is shown as failed. */
+					context.isError || st.stopped === true,
+					() => st.running === true,
 					elapsed,
 					transfer,
 					base?.renderShell === "self" ? { pad: context.outputPad } : undefined,
