@@ -11,12 +11,50 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
+type Pattern = { pattern: RegExp; label: string };
+
+/* Character ranges of the command matched by any of the patterns, merged and sorted. */
+function matchRanges(command: string, patterns: Pattern[]): [number, number][] {
+	const ranges: [number, number][] = [];
+	for (const { pattern } of patterns) {
+		const re = new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`);
+		for (const m of command.matchAll(re)) {
+			if (m[0].length > 0) ranges.push([m.index, m.index + m[0].length]);
+		}
+	}
+	ranges.sort((a, b) => a[0] - b[0]);
+	const merged: [number, number][] = [];
+	for (const r of ranges) {
+		const last = merged[merged.length - 1];
+		if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+		else merged.push([...r]);
+	}
+	return merged;
+}
+
+/* Apply style to the ranges. Each line piece is styled on its own so wrapping and scrolling keep it. */
+function highlight(command: string, ranges: [number, number][], style: (t: string) => string): string {
+	const styled = (t: string) =>
+		t
+			.split("\n")
+			.map((p) => (p ? style(p) : p))
+			.join("\n");
+	let out = "";
+	let pos = 0;
+	for (const [a, b] of ranges) {
+		out += command.slice(pos, a) + styled(command.slice(a, b));
+		pos = b;
+	}
+	return out + command.slice(pos);
+}
+
 /**
  * Confirmation prompt whose command body scrolls when it does not fit the terminal.
+ * The part of the command that matched a dangerous pattern is highlighted.
  * Up/Down pick Yes/No, Enter confirms; Shift+Up/Down, PageUp/PageDown, Home/End
  * scroll the command; y allows; n/Esc denies.
  */
-function confirmCommand(ctx: ExtensionContext, command: string, reason: string): Promise<boolean> {
+function confirmCommand(ctx: ExtensionContext, command: string, reason: string, matches: Pattern[]): Promise<boolean> {
 	return ctx.ui.custom<boolean>((tui, theme, _kb, done) => {
 		let scroll = 0;
 		let selected = 0; // 0 = Yes, 1 = No
@@ -24,11 +62,17 @@ function confirmCommand(ctx: ExtensionContext, command: string, reason: string):
 		let lastPage = 1;
 		let cachedWidth = -1;
 		let wrapped: string[] = [];
+		let positioned = false;
+
+		const style = (t: string) => theme.bold(theme.fg("error", t));
+		const probe = style("\u0000");
+		const styleOpen = probe.slice(0, probe.indexOf("\u0000"));
+		const marked = highlight(command, matchRanges(command, matches), style);
 
 		return {
 			render(width: number): string[] {
 				if (width !== cachedWidth) {
-					wrapped = command
+					wrapped = marked
 						.split("\n")
 						.flatMap((l) => wrapTextWithAnsi(l.replace(/\t/g, "  ") || " ", Math.max(1, width - 2)));
 					cachedWidth = width;
@@ -38,10 +82,16 @@ function confirmCommand(ctx: ExtensionContext, command: string, reason: string):
 				const max = Math.max(0, wrapped.length - page);
 				lastMax = max;
 				lastPage = page;
+				if (!positioned) {
+					/* Open on the first highlighted line, so the dangerous part is visible. */
+					positioned = true;
+					const hit = wrapped.findIndex((l) => l.includes(styleOpen));
+					if (hit >= 0) scroll = hit - 1;
+				}
 				scroll = Math.min(Math.max(0, scroll), max);
 
 				const out: string[] = [];
-				out.push(truncateToWidth(theme.fg("warning", `⚠️ Dangerous command (${reason}):`), width));
+				out.push(truncateToWidth(theme.fg("warning", `⚠️ Dangerous command (${reason}); matched part in `) + style("bold red") + theme.fg("warning", ":"), width));
 				out.push("");
 				for (const l of wrapped.slice(scroll, scroll + page)) out.push(truncateToWidth(`  ${l}`, width));
 				out.push("");
@@ -77,7 +127,7 @@ function confirmCommand(ctx: ExtensionContext, command: string, reason: string):
 
 export default function (pi: ExtensionAPI) {
 	// Always denied: blocked outright, no confirmation prompt
-	const denyPatterns: { pattern: RegExp; label: string }[] = [
+	const denyPatterns: Pattern[] = [
 		{ pattern: /\b(sudo|su|doas|pkexec)\b/i, label: "privilege escalation" },
 		{ pattern: /\bdd\b/i, label: "dd" },
 		{ pattern: /\bsystemctl\b/i, label: "systemctl" },
@@ -122,7 +172,7 @@ export default function (pi: ExtensionAPI) {
 	];
 
 	// Allowed only after user confirmation; the label is shown in the prompt
-	const dangerousPatterns: { pattern: RegExp; label: string }[] = [
+	const dangerousPatterns: Pattern[] = [
 		// Destructive file operations
 		{ pattern: /\brm\s+(-\w*[rRf]\w*|--recursive|--force)/i, label: "recursive/forced file removal" },
 		{ pattern: /\bshred\b/i, label: "irrecoverable file destruction (shred)" },
@@ -156,7 +206,8 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason: `Command always denied by policy: ${denied.label}` };
 		}
 
-		const dangerous = dangerousPatterns.find((d) => d.pattern.test(command));
+		const allDangerous = dangerousPatterns.filter((d) => d.pattern.test(command));
+		const dangerous = allDangerous[0];
 
 		if (dangerous) {
 			if (!ctx.hasUI) {
@@ -164,7 +215,8 @@ export default function (pi: ExtensionAPI) {
 				return { block: true, reason: `Dangerous command blocked (${dangerous.label}; no UI for confirmation)` };
 			}
 
-			if (!(await confirmCommand(ctx, command, dangerous.label))) {
+			const reason = [...new Set(allDangerous.map((d) => d.label))].join("; ");
+			if (!(await confirmCommand(ctx, command, reason, allDangerous))) {
 				return { block: true, reason: `Blocked by user (${dangerous.label})` };
 			}
 		}
