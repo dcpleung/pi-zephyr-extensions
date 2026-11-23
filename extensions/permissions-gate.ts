@@ -32,20 +32,30 @@ function matchRanges(command: string, patterns: Pattern[]): [number, number][] {
 	return merged;
 }
 
-/* Apply style to the ranges. Each line piece is styled on its own so wrapping and scrolling keep it. */
-function highlight(command: string, ranges: [number, number][], style: (t: string) => string): string {
-	const styled = (t: string) =>
+/*
+ * Apply style to the ranges, and plain (if given) to the text between them. Each line piece is
+ * styled on its own so wrapping and scrolling keep it.
+ */
+function highlight(
+	command: string,
+	ranges: [number, number][],
+	style: (t: string) => string,
+	plain: (t: string) => string = (t) => t,
+): string {
+	const styled = (f: (t: string) => string) => (t: string) =>
 		t
 			.split("\n")
-			.map((p) => (p ? style(p) : p))
+			.map((p) => (p ? f(p) : p))
 			.join("\n");
+	const hit = styled(style);
+	const rest = styled(plain);
 	let out = "";
 	let pos = 0;
 	for (const [a, b] of ranges) {
-		out += command.slice(pos, a) + styled(command.slice(a, b));
+		out += rest(command.slice(pos, a)) + hit(command.slice(a, b));
 		pos = b;
 	}
-	return out + command.slice(pos);
+	return out + rest(command.slice(pos));
 }
 
 /**
@@ -200,10 +210,23 @@ export default function (pi: ExtensionAPI) {
 
 		const command = event.input.command as string;
 
-		const denied = denyPatterns.find((d) => d.pattern.test(command));
-		if (denied) {
-			if (ctx.hasUI) ctx.ui.notify(`Denied (${denied.label}): ${command}`, "warning");
-			return { block: true, reason: `Command always denied by policy: ${denied.label}` };
+		const allDenied = denyPatterns.filter((d) => d.pattern.test(command));
+		if (allDenied.length > 0) {
+			const labels = [...new Set(allDenied.map((d) => d.label))].join("; ");
+			const ranges = matchRanges(command, allDenied);
+			if (ctx.hasUI) {
+				/* Matched part in bold red, the rest in the warning color the notification is drawn in. */
+				const th = ctx.ui.theme;
+				const shown = highlight(
+					command,
+					ranges,
+					(t) => th.bold(th.fg("error", t)),
+					(t) => th.fg("warning", t),
+				);
+				ctx.ui.notify(`Denied (${labels}): ${shown}`, "warning");
+			}
+			const matched = ranges.map(([a, b]) => `"${command.slice(a, b).replace(/\s+/g, " ").trim()}"`).join(", ");
+			return { block: true, reason: `Command always denied by policy: ${labels}. Matched: ${matched}` };
 		}
 
 		const allDangerous = dangerousPatterns.filter((d) => d.pattern.test(command));
