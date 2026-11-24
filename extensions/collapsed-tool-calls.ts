@@ -11,12 +11,16 @@
  * Expanding the row (the `app.tools.expand` key, ctrl+o by default) restores the
  * tool's normal rendering, including its full output.
  *
- * Applies to every tool, built-in or not, through `pi.registerToolRenderer()`.
+ * Applies to every tool, built-in or not, through `pi.registerToolRenderer()`, except those in
+ * KEEP_OWN_RENDERING, whose collapsed view is already compact and shows structure worth keeping
+ * (the subagent tree: which agents were spawned and how each is doing).
  */
 
 import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+
+const KEEP_OWN_RENDERING = new Set(["subagent"]);
 
 /* Argument names that best describe a call, in order of preference. */
 const SUMMARY_KEYS = ["command", "path", "file_path", "pattern", "query", "url", "name", "task", "agent"];
@@ -159,6 +163,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerToolRenderer((toolName, next) => {
 		const base = next();
+		if (KEEP_OWN_RENDERING.has(toolName)) return base;
 		return {
 			renderShell: base?.renderShell,
 

@@ -31,13 +31,22 @@ import {
 	truncateHead,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
-const COLLAPSED_ITEM_COUNT = 10;
+
+/* Lines drawn as-is, each cut to the width (so a long task or tool call never wraps the tree). */
+function linesComponent(lines: string[]): Component {
+	return {
+		render: (width: number) => lines.map((l) => truncateToWidth(l, Math.max(1, width))),
+		invalidate() {},
+	};
+}
+
+const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
 const TRUNCATION_NOTICE_RESERVE = 256;
 
@@ -925,51 +934,35 @@ export default function (pi: ExtensionAPI) {
 			};
 		},
 
-		renderCall(args, theme, _context) {
+		renderCall(args, theme, context) {
+			/*
+			 * While the model is still writing the call, list every agent it asks for. Once it runs, the
+			 * result draws the tree (agent, task, status), so the header alone avoids a second list.
+			 */
+			const listAgents = !context.executionStarted;
 			const scope: AgentScope = args.agentScope ?? "user";
+			const title = theme.fg("toolTitle", theme.bold("subagent "));
+			const lines: string[] = [];
 			if (args.chain && args.chain.length > 0) {
-				let text =
-					theme.fg("toolTitle", theme.bold("subagent ")) +
-					theme.fg("accent", `chain (${args.chain.length} steps)`) +
-					theme.fg("muted", ` [${scope}]`);
-				for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
-					const step = args.chain[i];
-					// Clean up {previous} placeholder for display
-					const cleanTask = step.task.replace(/\{previous\}/g, "").trim();
-					const preview = cleanTask.length > 40 ? `${cleanTask.slice(0, 40)}...` : cleanTask;
-					text +=
-						"\n  " +
-						theme.fg("muted", `${i + 1}.`) +
-						" " +
-						theme.fg("accent", step.agent) +
-						theme.fg("dim", ` ${preview}`);
-				}
-				if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
-				return new Text(text, 0, 0);
+				lines.push(title + theme.fg("accent", `chain (${args.chain.length} steps)`) + theme.fg("muted", ` [${scope}]`));
+				if (listAgents)
+					args.chain.forEach((step, i) => {
+						const task = oneLine((step.task ?? "").replace(/\{previous\}/g, ""));
+						lines.push(`  ${theme.fg("muted", `${i + 1}.`)} ${theme.fg("accent", step.agent ?? "...")}${theme.fg("dim", ` ${task}`)}`);
+					});
+			} else if (args.tasks && args.tasks.length > 0) {
+				lines.push(title + theme.fg("accent", `parallel (${args.tasks.length} tasks)`) + theme.fg("muted", ` [${scope}]`));
+				if (listAgents)
+					for (const t of args.tasks)
+						lines.push(`  ${theme.fg("accent", t.agent ?? "...")}${theme.fg("dim", ` ${oneLine(t.task ?? "")}`)}`);
+			} else {
+				lines.push(title + theme.fg("accent", listAgents ? args.agent || "..." : "single") + theme.fg("muted", ` [${scope}]`));
+				if (listAgents) lines.push(`  ${theme.fg("dim", args.task ? oneLine(args.task) : "...")}`);
 			}
-			if (args.tasks && args.tasks.length > 0) {
-				let text =
-					theme.fg("toolTitle", theme.bold("subagent ")) +
-					theme.fg("accent", `parallel (${args.tasks.length} tasks)`) +
-					theme.fg("muted", ` [${scope}]`);
-				for (const t of args.tasks.slice(0, 3)) {
-					const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-					text += `\n  ${theme.fg("accent", t.agent)}${theme.fg("dim", ` ${preview}`)}`;
-				}
-				if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
-				return new Text(text, 0, 0);
-			}
-			const agentName = args.agent || "...";
-			const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
-			let text =
-				theme.fg("toolTitle", theme.bold("subagent ")) +
-				theme.fg("accent", agentName) +
-				theme.fg("muted", ` [${scope}]`);
-			text += `\n  ${theme.fg("dim", preview)}`;
-			return new Text(text, 0, 0);
+			return linesComponent(lines);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
+		renderResult(result, { expanded }, theme, context) {
 			const details = result.details as SubagentDetails | undefined;
 			if (!details || details.results.length === 0) {
 				const text = result.content[0];
@@ -978,28 +971,79 @@ export default function (pi: ExtensionAPI) {
 
 			const mdTheme = getMarkdownTheme();
 
-			const renderDisplayItems = (items: DisplayItem[], limit?: number) => {
-				const toShow = limit ? items.slice(-limit) : items;
-				const skipped = limit && items.length > limit ? items.length - limit : 0;
-				let text = "";
-				if (skipped > 0) text += theme.fg("muted", `... ${skipped} earlier items\n`);
-				for (const item of toShow) {
-					if (item.type === "text") {
-						const preview = expanded ? item.text : item.text.split("\n").slice(0, 3).join("\n");
-						text += `${theme.fg("toolOutput", preview)}\n`;
-					} else {
-						text += `${theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme))}\n`;
-					}
-				}
-				return text.trimEnd();
-			};
-
 			const resultIcon = (child: SingleResult): string => {
 				if (child.status === "pending" || child.status === "running") {
 					return theme.fg("warning", "⏳");
 				}
 				if (isFailedResult(child)) return theme.fg("error", "✗");
 				return theme.fg("success", "✓");
+			};
+
+			const aggregateUsage = (results: SingleResult[]): UsageStats => {
+				const total: UsageStats = {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: 0,
+					contextTokens: 0,
+					turns: 0,
+				};
+				for (const result of results) {
+					total.input += result.usage.input;
+					total.output += result.usage.output;
+					total.cacheRead += result.usage.cacheRead;
+					total.cacheWrite += result.usage.cacheWrite;
+					total.cost += result.usage.cost;
+					total.turns += result.usage.turns;
+				}
+				return total;
+			};
+
+			/*
+			 * Collapsed view: the tree of agents, always shown in full, with one status line per agent
+			 * instead of its output (tool calls, text). Ctrl+O expands to the full output.
+			 */
+			const childSummary = (r: SingleResult): string => {
+				const calls = getDisplayItems(r.messages).filter(
+					(i): i is Extract<DisplayItem, { type: "toolCall" }> => i.type === "toolCall",
+				);
+				const count = `${calls.length} tool call${calls.length === 1 ? "" : "s"}`;
+				if (r.status === "pending") return theme.fg("muted", "pending");
+				if (r.status === "running") {
+					const last = calls.at(-1);
+					return (
+						theme.fg("warning", "running") +
+						theme.fg("muted", ` · ${count}`) +
+						(last ? theme.fg("muted", " · → ") + formatToolCall(last.name, last.args, theme.fg.bind(theme)) : "")
+					);
+				}
+				if (isFailedResult(r)) return theme.fg("error", `[${r.stopReason ?? r.status}] ${oneLine(getFailureSummary(r))}`);
+				const usage = formatUsageStats(r.usage, r.model);
+				return theme.fg("muted", count) + (usage ? theme.fg("dim", ` · ${usage}`) : "");
+			};
+			type TreeNode = { icon: string; label: string; task: string; summary: string };
+			const nodeOf = (r: SingleResult, label: string, task = r.task): TreeNode => ({
+				icon: resultIcon(r),
+				label,
+				task,
+				summary: childSummary(r),
+			});
+			const renderTree = (header: string | undefined, nodes: TreeNode[], total?: SingleResult[]) => {
+				const lines = header ? [header] : [];
+				nodes.forEach((n, i) => {
+					const last = i === nodes.length - 1;
+					const branch = header ? theme.fg("muted", last ? "└─ " : "├─ ") : "";
+					const cont = header ? theme.fg("muted", last ? "   " : "│  ") : "";
+					lines.push(`${branch}${n.icon} ${n.label}${theme.fg("dim", ` ${oneLine(n.task)}`)}`);
+					lines.push(`${cont}  ${n.summary}`);
+				});
+				if (total) {
+					const usage = formatUsageStats(aggregateUsage(total));
+					if (usage) lines.push(theme.fg("dim", `Total: ${usage}`));
+				}
+				lines.push(theme.fg("muted", "(Ctrl+O to expand output)"));
+				return linesComponent(lines);
 			};
 
 			if (details.mode === "single" && details.results.length === 1) {
@@ -1052,40 +1096,9 @@ export default function (pi: ExtensionAPI) {
 					return container;
 				}
 
-				let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
-				if (isRunning) text += ` ${theme.fg("warning", `[${r.status}]`)}`;
-				else if (isError) text += ` ${theme.fg("error", `[${r.stopReason ?? r.status}]`)}`;
-				if (isError && r.errorMessage) text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
-				else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
-				else {
-					text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
-					if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-				}
-				const usageStr = formatUsageStats(r.usage, r.model);
-				if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
-				return new Text(text, 0, 0);
+				const label = theme.fg("accent", theme.bold(r.agent)) + theme.fg("muted", ` (${r.agentSource})`);
+				return renderTree(undefined, [nodeOf(r, label)]);
 			}
-
-			const aggregateUsage = (results: SingleResult[]): UsageStats => {
-				const total: UsageStats = {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					cost: 0,
-					contextTokens: 0,
-					turns: 0,
-				};
-				for (const result of results) {
-					total.input += result.usage.input;
-					total.output += result.usage.output;
-					total.cacheRead += result.usage.cacheRead;
-					total.cacheWrite += result.usage.cacheWrite;
-					total.cost += result.usage.cost;
-					total.turns += result.usage.turns;
-				}
-				return total;
-			};
 
 			if (details.mode === "chain") {
 				const successCount = details.results.filter((result) => result.status === "completed").length;
@@ -1161,28 +1174,33 @@ export default function (pi: ExtensionAPI) {
 					return container;
 				}
 
-				// Collapsed view
-				let text =
+				/*
+				 * Collapsed view. Steps come from the call so the ones not started yet are listed too, with
+				 * their task as written (a started step's task has {previous} replaced by earlier output).
+				 */
+				const steps: { agent?: string; task?: string }[] =
+					(context.args as { chain?: { agent?: string; task?: string }[] } | undefined)?.chain ?? [];
+				const count = Math.max(steps.length, details.results.length);
+				const stepLabel = (i: number, agent: string) => `${theme.fg("muted", `${i + 1}.`)} ${theme.fg("accent", agent)}`;
+				const nodes: TreeNode[] = [];
+				for (let i = 0; i < count; i++) {
+					const r = details.results[i];
+					const written = steps[i]?.task?.replace(/\{previous\}/g, "");
+					if (r) nodes.push(nodeOf(r, stepLabel(i, r.agent), written ?? r.task));
+					else
+						nodes.push({
+							icon: theme.fg("muted", "○"),
+							label: stepLabel(i, steps[i]?.agent ?? "..."),
+							task: written ?? "",
+							summary: theme.fg("muted", hasActive ? "waiting" : "not run"),
+						});
+				}
+				const header =
 					icon +
 					" " +
 					theme.fg("toolTitle", theme.bold("chain ")) +
-					theme.fg("accent", `${successCount}/${details.results.length} steps`);
-				for (const r of details.results) {
-					const rIcon = resultIcon(r);
-					const displayItems = getDisplayItems(r.messages);
-					text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
-					if (displayItems.length === 0) {
-						const failed = isFailedResult(r);
-						const summary = failed ? getFailureSummary(r) : "(no output)";
-						text += `\n${theme.fg(failed ? "error" : "muted", summary)}`;
-					} else {
-						text += `\n${renderDisplayItems(displayItems, 5)}`;
-					}
-				}
-				const usageStr = formatUsageStats(aggregateUsage(details.results));
-				if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
-				text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-				return new Text(text, 0, 0);
+					theme.fg("accent", `${successCount}/${count} steps`);
+				return renderTree(header, nodes, hasActive ? undefined : details.results);
 			}
 
 			if (details.mode === "parallel") {
@@ -1257,28 +1275,9 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				// Collapsed view (or still running)
-				let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
-				for (const r of details.results) {
-					const rIcon = resultIcon(r);
-					const displayItems = getDisplayItems(r.messages);
-					text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
-					if (displayItems.length === 0) {
-						const failed = isFailedResult(r);
-						let summary = "(no output)";
-						if (r.status === "pending") summary = "(pending...)";
-						else if (r.status === "running") summary = "(running...)";
-						else if (failed) summary = getFailureSummary(r);
-						text += `\n${theme.fg(failed ? "error" : "muted", summary)}`;
-					} else {
-						text += `\n${renderDisplayItems(displayItems, 5)}`;
-					}
-				}
-				if (!isRunning) {
-					const usageStr = formatUsageStats(aggregateUsage(details.results));
-					if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
-				}
-				if (!expanded) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-				return new Text(text, 0, 0);
+				const header = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
+				const nodes = details.results.map((r) => nodeOf(r, theme.fg("accent", r.agent)));
+				return renderTree(header, nodes, isRunning ? undefined : details.results);
 			}
 
 			const text = result.content[0];
