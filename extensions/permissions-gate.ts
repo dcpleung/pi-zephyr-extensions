@@ -1,6 +1,8 @@
 /**
  * Permission Gate Extension
  *
+ * When the bash sandbox is active, rules it already enforces are skipped (see SANDBOX_COVERS).
+ *
  * Always denies some bash commands (sudo, dd, systemctl, package install/removal,
  * remote code execution, exfiltration, ssh, disk ops)
  * and prompts for confirmation before running other potentially dangerous ones.
@@ -12,6 +14,50 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 type Pattern = { pattern: RegExp; label: string };
+
+/*
+ * Rules the bash sandbox (extensions/bash-sandbox.ts) already enforces, by label. They are skipped only
+ * while the sandbox is actually active, so they apply again after `/sandbox off` or if bwrap fails.
+ *   sandbox  needs root or host access the sandbox removes (no setuid, no devices, own PID namespace,
+ *            read-only filesystem)
+ *   no-net   only meaningful with the network; skipped while the sandbox has it off
+ *   host     needs the host sockets (D-Bus, systemd, Docker); skipped when the sandbox hides them
+ */
+const SANDBOX_COVERS: Record<string, "sandbox" | "no-net" | "host"> = {
+	"privilege escalation": "sandbox",
+	dd: "sandbox",
+	"system package install/removal": "sandbox",
+	"disk / filesystem operation": "sandbox",
+	"write to block device": "sandbox",
+	"network download": "sandbox",
+	"ownership change": "sandbox",
+	"setuid/setgid bit": "sandbox",
+	"forced process kill": "sandbox",
+	"firewall change": "sandbox",
+	"user/cron account change": "sandbox",
+	systemctl: "host",
+	"system shutdown/reboot": "host",
+	"network transfer / exfiltration": "no-net",
+	"data upload / exfiltration": "no-net",
+	"bash network redirection": "no-net",
+	"ssh (includes ssh-keygen, ssh-add, ssh-agent, ...)": "no-net",
+};
+
+interface SandboxState {
+	active: boolean;
+	network: boolean;
+	hostHidden: boolean;
+}
+
+function coveredBySandbox(p: Pattern): boolean {
+	const st = (globalThis as Record<symbol, unknown>)[Symbol.for("pi-zephyr.bashSandbox")] as SandboxState | undefined;
+	if (!st?.active) return false;
+	const kind = SANDBOX_COVERS[p.label];
+	if (kind === "sandbox") return true;
+	if (kind === "no-net") return !st.network;
+	if (kind === "host") return st.hostHidden;
+	return false;
+}
 
 /* Character ranges of the command matched by any of the patterns, merged and sorted. */
 function matchRanges(command: string, patterns: Pattern[]): [number, number][] {
@@ -194,7 +240,8 @@ export default function (pi: ExtensionAPI) {
 		// Network downloads (uploads/pipe-to-shell are always denied above)
 		{ pattern: /\b(curl|wget)\b/i, label: "network download" },
 		// Permissions / ownership
-		{ pattern: /\b(chmod|chown|chgrp)\b.*(777|-R|--recursive)/i, label: "broad permission/ownership change" },
+		{ pattern: /\bchmod\b.*(777|-R|--recursive)/i, label: "broad permission change" },
+		{ pattern: /\b(chown|chgrp)\b.*(777|-R|--recursive)/i, label: "ownership change" },
 		{ pattern: /\bchmod\b.*[ugoa]*\+s\b/i, label: "setuid/setgid bit" },
 		// System control
 		{ pattern: /\b(shutdown|reboot|halt|poweroff|init\s+[06])\b/i, label: "system shutdown/reboot" },
@@ -210,7 +257,7 @@ export default function (pi: ExtensionAPI) {
 
 		const command = event.input.command as string;
 
-		const allDenied = denyPatterns.filter((d) => d.pattern.test(command));
+		const allDenied = denyPatterns.filter((d) => !coveredBySandbox(d) && d.pattern.test(command));
 		if (allDenied.length > 0) {
 			const labels = [...new Set(allDenied.map((d) => d.label))].join("; ");
 			const ranges = matchRanges(command, allDenied);
@@ -229,7 +276,7 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason: `Command always denied by policy: ${labels}. Matched: ${matched}` };
 		}
 
-		const allDangerous = dangerousPatterns.filter((d) => d.pattern.test(command));
+		const allDangerous = dangerousPatterns.filter((d) => !coveredBySandbox(d) && d.pattern.test(command));
 		const dangerous = allDangerous[0];
 
 		if (dangerous) {
