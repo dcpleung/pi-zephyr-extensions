@@ -3,6 +3,8 @@
  *
  * Replaces the built-in bash tool with one that runs every command inside bubblewrap (bwrap):
  *   - the whole filesystem is read-only, except the working directory ($PWD) and /tmp (and `writable`)
+ *   - Pi's agent directory (~/.pi/agent, or $PI_CODING_AGENT_DIR) is usable by a nested `pi`, but
+ *     its config and code cannot be changed (see AGENT DIR below)
  *   - credential files are hidden (~/.ssh, ~/.config/gh, ...); `unsetEnv` variables are removed
  *   - the network is OFF by default
  *   - a new PID/IPC/UTS namespace, and a new session (no terminal injection)
@@ -13,10 +15,19 @@
  * code that spawns processes directly (for example /zfootprint and /ztwister).
  *
  * Hidden by default:
- *   credentials   ~/.ssh ~/.gnupg ~/.config/gh ~/.aws ~/.netrc ~/.git-credentials ~/.pi/agent/auth.json
+ *   credentials   ~/.ssh ~/.gnupg ~/.config/gh ~/.aws ~/.netrc ~/.git-credentials <agent dir>/auth.json
  *   host sockets  /run/user (user D-Bus, systemd, agents), /run/dbus, /run/docker.sock, /run/containerd,
  *                 /run/podman. A Unix socket can be connected to even on a read-only mount, and
  *                 several of these are root-equivalent. SSH_AUTH_SOCK is not touched: add it to `unsetEnv`.
+ *
+ * AGENT DIR: a nested `pi` (run from bash) needs to create lock files there and write sessions/.
+ * But Pi loads config and code from it, so a writable agent dir would let a sandboxed command turn
+ * the sandbox off (settings.json), trust a project (trust.json) or plant code that runs unsandboxed
+ * on the next start (extensions/, npm/, bin/ on PATH, ...). So the agent dir is a tmpfs overlay:
+ * anything can be written, but writes are thrown away when the command ends. The entries not in
+ * AGENT_DIR_PROTECTED (sessions/, zephyr-agent/, ...) are bound through and their changes persist.
+ * Without overlay support (bwrap < 0.10 or kernel), only those entries are writable; a nested `pi`
+ * then fails to take its lock. A `writable` entry containing the agent dir makes all of it writable.
  *
  * Each bash call row is tagged with how it ran: "sandbox", "sandbox+net", or "no sandbox" (after
  * `/sandbox off`). Rows restored from an earlier session are not tagged: their state is unknown.
@@ -47,10 +58,15 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
-import { createBashTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { join, resolve } from "node:path";
+import {
+	createBashTool,
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+} from "@earendil-works/pi-coding-agent";
 import { type Component, visibleWidth } from "@earendil-works/pi-tui";
 
 /* Draws another component with a short tag appended to its first line. */
@@ -95,8 +111,41 @@ const HIDE_CREDENTIALS = [
 	"~/.aws",
 	"~/.netrc",
 	"~/.git-credentials",
-	"~/.pi/agent/auth.json",
 ];
+
+/* Agent dir entries Pi reads as config or code: never changed from inside the sandbox. */
+const AGENT_DIR_PROTECTED = new Set([
+	"settings.json",
+	"trust.json",
+	"models.json",
+	"mcp.json",
+	"keybindings.json",
+	"auth.json",
+	"AGENTS.md",
+	"CLAUDE.md",
+	"SYSTEM.md",
+	"APPEND_SYSTEM.md",
+	"extensions",
+	"npm",
+	"git",
+	"agents",
+	"skills",
+	"prompts",
+	"themes",
+	"bin",
+]);
+
+let overlayOk: boolean | undefined;
+/* Whether bwrap can put a tmpfs overlay on dir (needs bwrap >= 0.10 and unprivileged overlayfs). */
+function overlayWorks(dir: string): boolean {
+	if (overlayOk === undefined) {
+		const r = spawnSync("bwrap", ["--ro-bind", "/", "/", "--overlay-src", dir, "--tmp-overlay", dir, "true"]);
+		overlayOk = r.status === 0;
+	}
+	return overlayOk;
+}
+
+const isInside = (p: string, dir: string) => p === dir || p.startsWith(`${dir}/`);
 const HIDE_HOST_SOCKETS = ["/run/user", "/run/dbus", "/run/docker.sock", "/run/containerd", "/run/podman"];
 const DEFAULT_HIDE = [...HIDE_CREDENTIALS, ...HIDE_HOST_SOCKETS];
 const DEFAULT_GIT_READONLY = ["hooks"];
@@ -149,6 +198,22 @@ export function buildBwrapArgs(cfg: SandboxSettings, cwd: string, network: boole
 		if (existsSync(p)) args.push("--bind", p, p);
 	}
 
+	/* AGENT DIR (see the header). Skipped when a configured `writable` entry already covers it. */
+	const agentDir = resolve(getAgentDir());
+	const configured = (cfg.writable ?? DEFAULT_WRITABLE).map((p) => resolve(expand(p, cwd)));
+	if (existsSync(agentDir) && !configured.some((w) => isInside(agentDir, w))) {
+		if (overlayWorks(agentDir)) args.push("--overlay-src", agentDir, "--tmp-overlay", agentDir);
+		for (const name of readdirSync(agentDir)) {
+			if (AGENT_DIR_PROTECTED.has(name)) continue;
+			const p = join(agentDir, name);
+			args.push("--bind", p, p);
+		}
+		/* The overlay covered any writable path inside the agent dir (cwd, say): bind those again. */
+		for (const p of new Set(writable)) {
+			if (existsSync(p) && isInside(resolve(p), agentDir)) args.push("--bind", p, p);
+		}
+	}
+
 	/*
 	 * git needs its own directory writable even when cwd is a subdirectory of the repository or a
 	 * worktree whose git directory lives elsewhere. Then keep the parts that run code read-only.
@@ -164,7 +229,10 @@ export function buildBwrapArgs(cfg: SandboxSettings, cwd: string, network: boole
 	}
 
 	/* Hide after the binds so a hidden path wins even inside a writable one. */
-	const hide = [...(cfg.noDefaultHide ? [] : DEFAULT_HIDE), ...(cfg.hide ?? [])];
+	const hide = [
+		...(cfg.noDefaultHide ? [] : [...DEFAULT_HIDE, join(getAgentDir(), "auth.json")]),
+		...(cfg.hide ?? []),
+	];
 	for (const raw of hide) {
 		const e = expand(raw, cwd);
 		if (!existsSync(e)) continue;
